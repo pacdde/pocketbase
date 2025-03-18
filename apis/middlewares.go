@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"runtime"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/geoip"
 	"github.com/pocketbase/pocketbase/tools/hook"
 	"github.com/pocketbase/pocketbase/tools/list"
 	"github.com/pocketbase/pocketbase/tools/router"
@@ -397,10 +399,17 @@ func logRequest(event *core.RequestEvent, err error) {
 	}
 
 	if event.App.Settings().Logs.LogIP {
+		userIP := event.RealIP()
+		var geoIP any
+		if userIP != "" {
+			ip, _ := netip.ParseAddr(userIP)
+			geoIP = geoip.GeoIp(ip)
+		}
 		attrs = append(
 			attrs,
-			slog.String("userIP", event.RealIP()),
+			slog.String("userIP", userIP),
 			slog.String("remoteIP", event.RemoteIP()),
+			slog.Any("geoIp", geoIP),
 		)
 	}
 

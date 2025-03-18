@@ -13,6 +13,7 @@ require (
 	github.com/ganigeorgiev/fexpr v0.4.1
 	github.com/go-ozzo/ozzo-validation/v4 v4.3.0
 	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/oschwald/maxminddb-golang/v2 v2.0.0-beta.3
 	github.com/pocketbase/dbx v1.11.0
 	github.com/pocketbase/tygoja v0.0.0-20250103200817-ca580d8c5119
 	github.com/spf13/cast v1.7.1

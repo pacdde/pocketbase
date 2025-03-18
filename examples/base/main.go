@@ -13,9 +13,16 @@ import (
 	"github.com/pocketbase/pocketbase/plugins/ghupdate"
 	"github.com/pocketbase/pocketbase/plugins/jsvm"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
+	"github.com/pocketbase/pocketbase/tools/geoip"
 	"github.com/pocketbase/pocketbase/tools/hook"
 )
 
+/*
+TODO:
+
+- [file handler 1](https://github.com/pocketbase/pocketbase/blob/master/core/field_file.go#L459)
+- [file handler 2](https://github.com/pocketbase/pocketbase/blob/master/core/record_model.go#L602)
+*/
 func main() {
 	app := pocketbase.New()
 
@@ -103,6 +110,16 @@ func main() {
 	// GitHub selfupdate
 	ghupdate.MustRegister(app, app.RootCmd, ghupdate.Config{})
 
+	app.OnBootstrap().BindFunc(func(e *core.BootstrapEvent) error {
+		if err := e.Next(); err != nil {
+			return err
+		}
+
+		geoip.Init("GeoLite2-City.mmdb")
+
+		return nil
+	})
+
 	// static route to serves files from the provided public dir
 	// (if publicDir exists and the route path is not already defined)
 	app.OnServe().Bind(&hook.Handler[*core.ServeEvent]{
@@ -114,6 +131,11 @@ func main() {
 			return e.Next()
 		},
 		Priority: 999, // execute as latest as possible to allow users to provide their own route
+	})
+
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		geoip.Close()
+		return e.Next()
 	})
 
 	if err := app.Start(); err != nil {
