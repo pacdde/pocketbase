@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 	"github.com/pocketbase/pocketbase/tools/geoip"
 	"github.com/pocketbase/pocketbase/tools/hook"
+	"github.com/pocketbase/pocketbase/tools/types"
 )
 
 /*
@@ -22,6 +24,7 @@ TODO:
 
 - [file handler 1](https://github.com/pocketbase/pocketbase/blob/master/core/field_file.go#L459)
 - [file handler 2](https://github.com/pocketbase/pocketbase/blob/master/core/record_model.go#L602)
+- [file handler 3](https://github.com/pocketbase/pocketbase/blob/master/core/record_model.go#L988)
 */
 func main() {
 	app := pocketbase.New()
@@ -131,6 +134,67 @@ func main() {
 			return e.Next()
 		},
 		Priority: 999, // execute as latest as possible to allow users to provide their own route
+	})
+
+	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		if _, err := app.FindCollectionByNameOrId("__pb_files__"); err != nil {
+			collection := core.NewBaseCollection("files", "__pb_files__")
+			// set rules
+			collection.ViewRule = types.Pointer("")
+			collection.CreateRule = types.Pointer("@request.auth.id != ''")
+			collection.UpdateRule = types.Pointer(`
+				@request.auth.id != '' &&
+				user = @request.auth.id &&
+				(@request.body.user:isset = false || @request.body.user = @request.auth.id)
+			`)
+
+			collection.Fields.Add(&core.FileField{
+				Name:      "filename",
+				Required:  true,
+				MaxSelect: 1,
+				MimeTypes: []string{"image/jpeg", "image/png"},
+			})
+			collection.Fields.Add(&core.TextField{
+				Name:     "password",
+				Required: false,
+				Max:      32,
+				Hidden:   true,
+			})
+			usersCollection, err := app.FindCollectionByNameOrId("users")
+			if err != nil {
+				return err
+			}
+			collection.Fields.Add(&core.RelationField{
+				Name:          "user",
+				Required:      true,
+				CascadeDelete: true,
+				CollectionId:  usersCollection.Id,
+			})
+			collection.Fields.Add(&core.AutodateField{
+				Name:     "created",
+				OnCreate: true,
+			})
+			collection.Fields.Add(&core.AutodateField{
+				Name:     "updated",
+				OnCreate: true,
+				OnUpdate: true,
+			})
+			collection.AddIndex("idx_files_filename", true, "filename", "")
+			err = app.Save(collection)
+			if err != nil {
+				return err
+			}
+		}
+		return e.Next()
+	})
+
+	app.OnModelAfterCreateSuccess("_logs").BindFunc(func(e *core.ModelEvent) error {
+		if log, ok := e.Model.(*core.Log); ok {
+			fmt.Println("log created: ", log.Data)
+			// log.Data.Set("7777", 77777)
+			// app.Save(log) // try to modify logs data, but not working
+		}
+		return e.Next()
 	})
 
 	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {

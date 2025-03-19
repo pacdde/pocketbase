@@ -42,6 +42,7 @@ func bindFileApi(app core.App, rg *router.RouterGroup[*core.RequestEvent]) {
 
 	sub := rg.Group("/files")
 	sub.POST("/token", api.fileToken).Bind(RequireAuth())
+	sub.GET("/{filename}", api._fileDownload) //.Bind(collectionPathRateLimit("", "file"))
 	sub.GET("/{collection}/{recordId}/{filename}", api.download).Bind(collectionPathRateLimit("", "file"))
 }
 
@@ -120,6 +121,109 @@ func (api *fileApi) download(e *core.RequestEvent) error {
 		requestInfo.Auth = authRecord
 
 		if ok, _ := e.App.CanAccessRecord(record, &requestInfo, record.Collection().ViewRule); !ok {
+			return e.NotFoundError("", errors.New("insufficient permissions to access the file resource"))
+		}
+	}
+
+	baseFilesPath := record.BaseFilesPath()
+
+	// fetch the original view file field related record
+	if collection.IsView() {
+		fileRecord, err := e.App.FindRecordByViewFile(collection.Id, fileField.Name, filename)
+		if err != nil {
+			return e.NotFoundError("", fmt.Errorf("failed to fetch view file field record: %w", err))
+		}
+		baseFilesPath = fileRecord.BaseFilesPath()
+	}
+
+	fsys, err := e.App.NewFilesystem()
+	if err != nil {
+		return e.InternalServerError("Filesystem initialization failure.", err)
+	}
+	defer fsys.Close()
+
+	originalPath := baseFilesPath + "/" + filename
+	servedPath := originalPath
+	servedName := filename
+
+	// check for valid thumb size param
+	thumbSize := e.Request.URL.Query().Get("thumb")
+	if thumbSize != "" && (list.ExistInSlice(thumbSize, defaultThumbSizes) || list.ExistInSlice(thumbSize, fileField.Thumbs)) {
+		// extract the original file meta attributes and check it existence
+		oAttrs, oAttrsErr := fsys.Attributes(originalPath)
+		if oAttrsErr != nil {
+			return e.NotFoundError("", err)
+		}
+
+		// check if it is an image
+		if list.ExistInSlice(oAttrs.ContentType, imageContentTypes) {
+			// add thumb size as file suffix
+			servedName = thumbSize + "_" + filename
+			servedPath = baseFilesPath + "/thumbs_" + filename + "/" + servedName
+
+			// create a new thumb if it doesn't exist
+			if exists, _ := fsys.Exists(servedPath); !exists {
+				if err := api.createThumb(e, fsys, originalPath, servedPath, thumbSize); err != nil {
+					e.App.Logger().Warn(
+						"Fallback to original - failed to create thumb "+servedName,
+						slog.Any("error", err),
+						slog.String("original", originalPath),
+						slog.String("thumb", servedPath),
+					)
+
+					// fallback to the original
+					servedName = filename
+					servedPath = originalPath
+				}
+			}
+		}
+	}
+
+	event := new(core.FileDownloadRequestEvent)
+	event.RequestEvent = e
+	event.Collection = collection
+	event.Record = record
+	event.FileField = fileField
+	event.ServedPath = servedPath
+	event.ServedName = servedName
+
+	// clickjacking shouldn't be a concern when serving uploaded files,
+	// so it safe to unset the global X-Frame-Options to allow files embedding
+	// (note: it is out of the hook to allow users to customize the behavior)
+	e.Response.Header().Del("X-Frame-Options")
+
+	return e.App.OnFileDownloadRequest().Trigger(event, func(e *core.FileDownloadRequestEvent) error {
+		if err := fsys.Serve(e.Response, e.Request, e.ServedPath, e.ServedName); err != nil {
+			return e.NotFoundError("", err)
+		}
+
+		return nil
+	})
+}
+
+func (api *fileApi) _fileDownload(e *core.RequestEvent) error {
+	collection, err := e.App.FindCachedCollectionByNameOrId("__pb_files__")
+	if err != nil {
+		return e.NotFoundError("", nil)
+	}
+
+	filename := e.Request.PathValue("filename")
+	record, err := e.App.FindFirstRecordByData(collection, "filename", filename)
+	if err != nil {
+		return e.NotFoundError("", err)
+	}
+
+	fileField := record.FindFileFieldByFile(filename)
+	if fileField == nil {
+		return e.NotFoundError("", nil)
+	}
+
+	password := record.GetString("password")
+
+	if password != "" {
+		token := e.Request.URL.Query().Get("password")
+
+		if token != password {
 			return e.NotFoundError("", errors.New("insufficient permissions to access the file resource"))
 		}
 	}
